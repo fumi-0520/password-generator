@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>パスワード生成</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #fff; --text: #1d2330; --muted: #6b7280;
+    --border: #d9dce3; --accent: #2f6fed; --accent-text: #fff;
+    --weak: #e5484d; --fair: #f5a524; --good: #3fb950; --strong: #1f8f4e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14161b; --card: #1e2128; --text: #e6e8ec; --muted: #9aa1ad;
+      --border: #343944; --accent: #5b8cff; --accent-text: #0b0d12;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14161b; --card: #1e2128; --text: #e6e8ec; --muted: #9aa1ad;
+    --border: #343944; --accent: #5b8cff; --accent-text: #0b0d12;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center;
+    padding: 16px; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", sans-serif;
+  }
+  main {
+    width: 100%; max-width: 480px; background: var(--card);
+    border: 1px solid var(--border); border-radius: 12px; padding: 24px;
+  }
+  h1 { font-size: 1.25rem; margin: 0 0 20px; }
+  .output { display: flex; gap: 8px; }
+  #password {
+    flex: 1; min-width: 0; padding: 12px; font-size: 1.1rem;
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--bg); color: var(--text);
+  }
+  button {
+    padding: 0 16px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--card); color: var(--text); font-size: .95rem; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary {
+    width: 100%; padding: 12px; margin-top: 20px;
+    background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600;
+  }
+  .meter { height: 6px; background: var(--border); border-radius: 3px; margin-top: 12px; overflow: hidden; }
+  .meter span { display: block; height: 100%; width: 0; transition: width .2s, background .2s; }
+  .strength { font-size: .85rem; color: var(--muted); margin-top: 6px; display: flex; justify-content: space-between; }
+  fieldset { border: 0; padding: 0; margin: 20px 0 0; }
+  .row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  #lengthValue { font-weight: 600; font-variant-numeric: tabular-nums; }
+  label.check { display: flex; align-items: center; gap: 10px; padding: 6px 0; cursor: pointer; }
+  label.check input { width: 18px; height: 18px; accent-color: var(--accent); }
+  .hint { color: var(--muted); font-size: .85rem; font-family: ui-monospace, Consolas, monospace; margin-left: auto; }
+  .error { color: var(--weak); font-size: .9rem; margin-top: 8px; min-height: 1.2em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>パスワード生成</h1>
+
+  <div class="output">
+    <input id="password" type="text" readonly aria-label="生成されたパスワード">
+    <button id="copy" type="button">コピー</button>
+  </div>
+  <div class="meter"><span id="meterBar"></span></div>
+  <div class="strength"><span id="strengthLabel"></span><span id="entropy"></span></div>
+
+  <fieldset>
+    <div class="row">
+      <label for="length">文字数</label>
+      <span id="lengthValue">16</span>
+    </div>
+    <input id="length" type="range" min="4" max="64" value="16">
+  </fieldset>
+
+  <fieldset>
+    <label class="check"><input type="checkbox" id="upper" checked>英大文字<span class="hint">A-Z</span></label>
+    <label class="check"><input type="checkbox" id="lower" checked>英小文字<span class="hint">a-z</span></label>
+    <label class="check"><input type="checkbox" id="digits" checked>数字<span class="hint">0-9</span></label>
+    <label class="check"><input type="checkbox" id="symbols" checked>記号<span class="hint">!@#$%^&amp;*…</span></label>
+    <label class="check"><input type="checkbox" id="noAmbiguous">紛らわしい文字を除外<span class="hint">0 O o 1 l I |</span></label>
+  </fieldset>
+
+  <div class="error" id="error"></div>
+  <button id="generate" class="primary" type="button">生成</button>
+</main>
+
+<script>
+  const SETS = {
+    upper: "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    lower: "abcdefghijklmnopqrstuvwxyz",
+    digits: "0123456789",
+    symbols: "!@#$%^&*()-_=+[]{};:,.<>/?~|",
+  };
+  const AMBIGUOUS = "0Oo1lI|";
+
+  const $ = (id) => document.getElementById(id);
+
+  // 偏りのない乱数（棄却サンプリング）
+  function randomInt(max) {
+    const limit = Math.floor(0x100000000 / max) * max;
+    const buf = new Uint32Array(1);
+    do { crypto.getRandomValues(buf); } while (buf[0] >= limit);
+    return buf[0] % max;
+  }
+
+  function generate() {
+    const length = Number($("length").value);
+    const noAmb = $("noAmbiguous").checked;
+    const groups = Object.keys(SETS)
+      .filter((k) => $(k).checked)
+      .map((k) => noAmb ? [...SETS[k]].filter((c) => !AMBIGUOUS.includes(c)).join("") : SETS[k]);
+
+    if (groups.length === 0) {
+      $("error").textContent = "文字の種類を1つ以上選んでください。";
+      return;
+    }
+    $("error").textContent = "";
+
+    const all = groups.join("");
+    // 選択した各種類から最低1文字ずつ含める
+    const chars = groups.map((g) => g[randomInt(g.length)]);
+    while (chars.length < length) chars.push(all[randomInt(all.length)]);
+    for (let i = chars.length - 1; i > 0; i--) {
+      const j = randomInt(i + 1);
+      [chars[i], chars[j]] = [chars[j], chars[i]];
+    }
+
+    $("password").value = chars.join("");
+    showStrength(length * Math.log2(all.length));
+  }
+
+  function showStrength(bits) {
+    const levels = [
+      [40, "弱い", "--weak", 25],
+      [60, "普通", "--fair", 50],
+      [80, "強い", "--good", 75],
+      [Infinity, "非常に強い", "--strong", 100],
+    ];
+    const [, label, color, pct] = levels.find(([max]) => bits < max);
+    $("meterBar").style.width = pct + "%";
+    $("meterBar").style.background = `var(${color})`;
+    $("strengthLabel").textContent = "強度: " + label;
+    $("entropy").textContent = `約 ${Math.round(bits)} bit`;
+  }
+
+  $("length").addEventListener("input", (e) => {
+    $("lengthValue").textContent = e.target.value;
+    generate();
+  });
+  document.querySelectorAll("input[type=checkbox]").forEach((el) => el.addEventListener("change", generate));
+  $("generate").addEventListener("click", generate);
+  $("copy").addEventListener("click", async () => {
+    const value = $("password").value;
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+    } catch {
+      $("password").select();
+      document.execCommand("copy");
+    }
+    $("copy").textContent = "コピー済み";
+    setTimeout(() => ($("copy").textContent = "コピー"), 1500);
+  });
+
+  generate();
+</script>
+</body>
+</html>
